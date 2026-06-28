@@ -30,6 +30,18 @@ def build_html(data):
     lat_count = len(data.get("lateral", []))
     raw_json = json.dumps(data, separators=(",", ":"))
 
+    # Build EXPR preview list for the panel (nodes with exprs, sorted by expr_lines desc)
+    exprs_for_panel = []
+    for n in data.get("nodes", []):
+        if n.get("expr_preview") and n["exprs"] > 0:
+            exprs_for_panel.append({
+                "id": n["id"],
+                "exprs": n["exprs"],
+                "expr_lines": n.get("expr_lines", 0),
+                "preview": n["expr_preview"],
+            })
+    exprs_for_panel.sort(key=lambda x: x["expr_lines"], reverse=True)
+
     html = _HTML_TEMPLATE
     subs = {
         "PACKAGE": package,
@@ -40,10 +52,40 @@ def build_html(data):
         "ORCHESTRATORS_JSON": json.dumps(orchestrators),
         "HUBS_JSON": json.dumps(hubs),
         "ENTRIES_JSON": json.dumps(entries),
+        "EXPR_PANEL_HTML": _render_expr_panel(exprs_for_panel),
+        "ENTRY_LABELS": _render_entry_labels(entries),
     }
     for key, val in subs.items():
         html = html.replace("{{" + key + "}}", val)
     return html
+
+
+def _render_expr_panel(exprs):
+    """Build HTML for the EXPR preview section in the right panel."""
+    if not exprs:
+        return '<div class="stat-row"><span style="color:#484f58">(no exprs)</span></div>'
+    lines = []
+    for e in exprs[:6]:
+        preview = e["preview"]
+        if len(preview) > 50:
+            preview = preview[:47] + "..."
+        lines.append(
+            f'<div class="expr-row" data-node="{e["id"]}" '
+            f'title="{e["exprs"]} expr(s), {e["expr_lines"]} total lines">'
+            f'<span class="expr-node">{e["id"]}</span> '
+            f'<span class="expr-code">{preview}</span>'
+            f'</div>'
+        )
+    return "\n".join(lines)
+
+
+def _render_entry_labels(entries):
+    """Build HTML for the entry point labels."""
+    if not entries:
+        return '<span style="color:#484f58">(none auto-detected)</span>'
+    return ", ".join(
+        f'<strong style="color:#56d364">{e}</strong>' for e in entries
+    )
 
 
 def _guess_package_name(data):
@@ -111,8 +153,12 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   .link-lateral { stroke: #4d3a1a; stroke-width: 1; fill: none; stroke-dasharray: 4,3; opacity: 0.7; marker-end: url(#arrow-lat); }
   .link-lateral.hi { stroke: #e3b341; stroke-width: 1.5; opacity: 1; }
 
-  circle { cursor: pointer; stroke-width: 1.5; transition: stroke 0.15s; }
-  circle:hover { stroke: #fff !important; }
+  .node-g { cursor: pointer; }
+  .node-shape { stroke-width: 1.5; transition: stroke 0.15s, fill-opacity 0.15s; }
+  .node-shape:hover { stroke: #fff !important; }
+
+  /* Entry point glow ring */
+  .entry-ring { fill: none; stroke: #56d364; stroke-width: 2; stroke-dasharray: 4,3; opacity: 0.6; pointer-events: none; }
 
   .label { pointer-events: none; fill: #e6edf3; font-size: 10px; text-anchor: middle; }
   .label-sm { font-size: 8.5px; fill: #8b949e; }
@@ -122,6 +168,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     background: #161b22; border: 1px solid #30363d; border-radius: 6px;
     padding: 10px 14px; font-size: 12px; line-height: 1.7; min-width: 240px;
     box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    z-index: 100;
   }
   #tip strong { color: #58a6ff; }
   #tip .badge { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 10px; margin-right: 3px; }
@@ -134,9 +181,9 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   .b-exception { background: #4a1f1f; color: #ff6b6b; }
 
   #panel {
-    position: fixed; top: 16px; right: 16px; width: 270px;
+    position: fixed; top: 16px; right: 16px; width: 280px; max-height: calc(100vh - 32px);
     background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-    padding: 14px; font-size: 12px;
+    padding: 14px; font-size: 12px; overflow-y: auto;
   }
   #panel h2 { font-size: 13px; color: #e6edf3; margin-bottom: 10px; }
   #panel h3 { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: .05em; margin: 10px 0 6px; }
@@ -148,6 +195,14 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   .stat-row { display: flex; justify-content: space-between; }
   .stat-val { color: #e6edf3; }
 
+  /* EXPR preview section */
+  .expr-row { padding: 3px 0; border-bottom: 1px solid #21262d; font-size: 10px; line-height: 1.5; cursor: pointer; }
+  .expr-row:hover { background: #1c2128; border-radius: 2px; }
+  .expr-node { color: #7ee787; }
+  .expr-code { color: #8b949e; font-style: italic; }
+
+  #entries-section { margin-top: 6px; padding: 6px 8px; background: #0d1117; border-radius: 4px; color: #8b949e; font-size: 11px; }
+
   #legend {
     position: fixed; bottom: 16px; left: 16px;
     background: #161b22; border: 1px solid #30363d; border-radius: 8px;
@@ -155,7 +210,8 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
   #legend h3 { font-size: 10px; color: #8b949e; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 5px; }
   .leg-row { display: flex; align-items: center; gap: 8px; }
-  .leg-dot { width: 12px; height: 12px; border-radius: 50%; }
+  .leg-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+  .leg-rect { width: 12px; height: 12px; border-radius: 2px; flex-shrink: 0; }
 
   #hint { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); color: #484f58; font-size: 11px; pointer-events: none; }
 </style>
@@ -185,7 +241,10 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <div id="panel">
   <h2>&#x1f9e9 {{PACKAGE}}</h2>
 
-  <h3>Edges</h3>
+  <h3>Entry points</h3>
+  <div id="entries-section">{{ENTRY_LABELS}}</div>
+
+  <h3 style="margin-top:12px">Edges</h3>
   <label class="toggle-row">
     <input type="checkbox" id="chk-calls" checked>
     <span class="dot" style="background:#444c56; border: 1px solid #58a6ff"></span>
@@ -197,6 +256,9 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     Lateral / pkg-state ({{LAT_COUNT}})
   </label>
   <div id="lateral-info">Click a node to see its lateral edges</div>
+
+  <h3>Top EXPR blocks</h3>
+  <div id="expr-panel">{{EXPR_PANEL_HTML}}</div>
 
   <h3>Stats</h3>
   <div id="stats">
@@ -214,14 +276,16 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 </div>
 
 <div id="legend">
-  <h3>Node roles</h3>
+  <h3>Node roles & shapes</h3>
   <div class="leg-row"><div class="leg-dot" style="background:#f0883e"></div> Orchestrator</div>
   <div class="leg-row"><div class="leg-dot" style="background:#9e6fe5"></div> Hub (pkg-state init)</div>
-  <div class="leg-row"><div class="leg-dot" style="background:#56d364"></div> Entry point</div>
-  <div class="leg-row"><div class="leg-dot" style="background:#388bfd"></div> Standard</div>
+  <div class="leg-row"><div class="leg-dot" style="background:#56d364; box-shadow: 0 0 4px #56d364;"></div> Entry point</div>
+  <div class="leg-row"><div class="leg-dot" style="background:#388bfd"></div> Standard (circle)</div>
+  <div class="leg-row"><div class="leg-rect" style="background:#388bfd"></div> Has EXITs (square)</div>
   <div class="leg-row"><div class="leg-dot" style="background:#3d444d; border: 1px solid #484f58"></div> Empty wrapper</div>
   <div class="leg-row"><div class="leg-dot" style="background:#f14c4c"></div> Has EXCEPTION handler</div>
   <br>
+  <div class="leg-row" style="color:#8b949e">Dashed ring = entry point</div>
   <div class="leg-row" style="color:#8b949e">Size ~ total annotations + expr_lines</div>
 </div>
 
@@ -291,6 +355,9 @@ function nodeR(n) {
   return Math.max(8, Math.sqrt(weight) * 3.5);
 }
 
+// Node shape: square (rect) if exits > 0, otherwise circle
+function nodeShape(d) { return d.exits > 0 ? 'rect' : 'circle'; }
+
 document.getElementById('s-names').textContent = Object.keys(uidByName).length;
 document.getElementById('s-rules').textContent = nodes.reduce((a,n)=>a+n.rules,0);
 document.getElementById('s-asserts').textContent = nodes.reduce((a,n)=>a+(n.asserts||0),0);
@@ -345,11 +412,36 @@ const node = gNode.selectAll('g')
     .on('end', (e,d) => { if (!e.active) sim.alphaTarget(0); d.fx=null; d.fy=null; })
   );
 
-node.append('circle')
-  .attr('r', d => nodeR(d))
-  .attr('fill', d => nodeColor(d))
-  .attr('fill-opacity', 0.9)
-  .attr('stroke', d => d3.color(nodeColor(d)).darker(0.8));
+// Draw entry-point glow ring (dashed circle outside the node)
+node.filter(d => ENTRIES.has(d.id)).append('circle')
+  .attr('class', 'entry-ring')
+  .attr('r', d => nodeR(d) + 6);
+
+// Draw node shape: circle for normal, rect for EXIT nodes
+node.each(function(d) {
+  const g = d3.select(this);
+  const r = nodeR(d);
+  if (d.exits > 0) {
+    // Square node — rect with rounded corners
+    g.append('rect')
+      .attr('class', 'node-shape')
+      .attr('x', -r)
+      .attr('y', -r)
+      .attr('width', r * 2)
+      .attr('height', r * 2)
+      .attr('rx', 3)
+      .attr('fill', nodeColor(d))
+      .attr('fill-opacity', 0.9)
+      .attr('stroke', d3.color(nodeColor(d)).darker(0.8));
+  } else {
+    g.append('circle')
+      .attr('class', 'node-shape')
+      .attr('r', r)
+      .attr('fill', nodeColor(d))
+      .attr('fill-opacity', 0.9)
+      .attr('stroke', d3.color(nodeColor(d)).darker(0.8));
+  }
+});
 
 node.append('text')
   .attr('class', 'label')
@@ -376,9 +468,11 @@ node.on('mousemove', function(event, d) {
   if (d.asserts && d.asserts > 0) extras.push('<span class="badge b-assert">ASSERT ' + d.asserts + '</span>');
   if (d.exits && d.exits > 0) extras.push('<span class="badge b-exit">EXIT ' + d.exits + '</span>');
   if (d.has_exception) extras.push('<span class="badge b-exception">\u26a0 EXCEPTION</span>');
+  if (ENTRIES.has(d.id)) extras.push('<span class="badge" style="background:#1a3b2a;color:#56d364;border:1px solid #56d364">ENTRY</span>');
+  const shapeLabel = d.exits > 0 ? 'SQUARE' : 'CIRCLE';
   tip.innerHTML = [
     '<strong>' + d.display + '</strong><br>',
-    '<span style="color:#8b949e">L' + d.line + '</span><br><br>',
+    '<span style="color:#8b949e">L' + d.line + ' &middot; ' + shapeLabel + '</span><br><br>',
     '<span class="badge b-leaf">LEAF ' + d.rules + '</span>',
     '<span class="badge b-expr">EXPR ' + d.exprs + '</span>',
     '<span class="badge b-state">STATE ' + d.states + '</span>',
@@ -387,6 +481,22 @@ node.on('mousemove', function(event, d) {
   ].join('');
 }).on('mouseleave', function() {
   tip.style.display = 'none';
+});
+
+// Click on EXPR panel row → highlight corresponding node
+document.addEventListener('click', function(e) {
+  const row = e.target.closest('.expr-row');
+  if (row) {
+    const targetId = row.dataset.node;
+    const targetNode = nodes.find(n => n.id === targetId);
+    if (targetNode) {
+      // Trigger click on the node
+      const nodeSel = node.filter(d => d._uid === targetNode._uid);
+      if (!nodeSel.empty()) {
+        nodeSel.dispatch('click');
+      }
+    }
+  }
 });
 
 const latInfo = document.getElementById('lateral-info');
@@ -421,9 +531,12 @@ node.on('click', function(event, d) {
     latNeighbors.add(s); latNeighbors.add(t);
   });
 
-  node.select('circle')
+  // Highlight node shapes + rings
+  node.select('.node-shape')
     .attr('fill-opacity', nd => callNeighbors.has(nd._uid) || latNeighbors.has(nd._uid) ? 0.95 : 0.2)
     .attr('stroke', nd => nd._uid === d._uid ? '#fff' : (callNeighbors.has(nd._uid) ? '#58a6ff' : (latNeighbors.has(nd._uid) ? '#e3b341' : d3.color(nodeColor(nd)).darker(0.8))));
+  node.select('.entry-ring')
+    .attr('stroke-opacity', nd => callNeighbors.has(nd._uid) || latNeighbors.has(nd._uid) ? 0.6 : 0.1);
 
   callLink
     .classed('hi', e => {
@@ -463,9 +576,11 @@ svg.on('click', () => {
 });
 
 function resetHighlight() {
-  node.select('circle')
+  node.select('.node-shape')
     .attr('fill-opacity', 0.9)
     .attr('stroke', d => d3.color(nodeColor(d)).darker(0.8));
+  node.select('.entry-ring')
+    .attr('stroke-opacity', 0.6);
   callLink.classed('hi', false).attr('stroke-opacity', 1);
   const showLat = document.getElementById('chk-lateral').checked;
   latLink.style('display', showLat ? null : 'none').classed('hi', false);

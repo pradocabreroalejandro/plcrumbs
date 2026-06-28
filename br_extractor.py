@@ -575,6 +575,12 @@ def build_graph_data(nodes):
     out_nodes = []
     for n in nodes:
         total_expr_lines = sum(len(e.sql) for e in n.exprs)
+        # Preview: first 2 lines of the longest EXPR, or empty string
+        expr_preview = ""
+        if n.exprs:
+            longest = max(n.exprs, key=lambda e: len(e.sql))
+            preview_lines = [ln.strip() for ln in longest.sql[:2] if ln.strip()]
+            expr_preview = " | ".join(preview_lines)[:80]
         out_nodes.append({
             "id": n.name, "line": n.line_no,
             "rules": len(n.leaves), "asserts": len(n.asserts),
@@ -582,6 +588,7 @@ def build_graph_data(nodes):
             "states": len(n.states), "flows": len(n.flows),
             "exits": len(n.exits), "configs": len(n.configs),
             "has_exception": n.has_exception,
+            "expr_preview": expr_preview,
         })
 
     calls = []
