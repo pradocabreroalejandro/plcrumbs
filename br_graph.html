@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>plcrumbs · pkg_solar_monitor — BR Graph</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f1117; color: #c9d1d9; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 13px; overflow: hidden; }
+
+  #canvas { width: 100vw; height: 100vh; }
+
+  /* edges */
+  .link-call { stroke: #444c56; stroke-width: 1.5; fill: none; marker-end: url(#arrow-call); }
+  .link-call.hi  { stroke: #58a6ff; stroke-width: 2; }
+  .link-lateral { stroke: #4d3a1a; stroke-width: 1; fill: none; stroke-dasharray: 4,3; opacity: 0.7; marker-end: url(#arrow-lat); }
+  .link-lateral.hi { stroke: #e3b341; stroke-width: 1.5; opacity: 1; }
+
+  /* nodes */
+  circle { cursor: pointer; stroke-width: 1.5; transition: stroke 0.15s; }
+  circle:hover { stroke: #fff !important; }
+
+  .label { pointer-events: none; fill: #e6edf3; font-size: 10px; text-anchor: middle; }
+  .label-sm { font-size: 8.5px; fill: #8b949e; }
+
+  /* tooltip */
+  #tip {
+    position: fixed; pointer-events: none; display: none;
+    background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+    padding: 10px 14px; font-size: 12px; line-height: 1.7; min-width: 220px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  }
+  #tip strong { color: #58a6ff; }
+  #tip .badge { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 10px; margin-right: 3px; }
+  .b-leaf { background: #1f4b6b; color: #79c0ff; }
+  .b-expr { background: #2d3b1f; color: #7ee787; }
+  .b-state { background: #3b2d4a; color: #d2a8ff; }
+  .b-flow { background: #4b3320; color: #ffa657; }
+
+  /* panel */
+  #panel {
+    position: fixed; top: 16px; right: 16px; width: 260px;
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 14px; font-size: 12px;
+  }
+  #panel h2 { font-size: 13px; color: #e6edf3; margin-bottom: 10px; }
+  #panel h3 { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: .05em; margin: 10px 0 6px; }
+  .toggle-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; cursor: pointer; }
+  .toggle-row input { cursor: pointer; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  #lateral-info { margin-top: 6px; padding: 6px 8px; background: #0d1117; border-radius: 4px; color: #8b949e; font-size: 11px; min-height: 24px; }
+  #stats { margin-top: 10px; color: #8b949e; font-size: 11px; line-height: 1.8; }
+  .stat-row { display: flex; justify-content: space-between; }
+  .stat-val { color: #e6edf3; }
+
+  /* legend */
+  #legend {
+    position: fixed; bottom: 16px; left: 16px;
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 12px 14px; font-size: 11px; line-height: 1.9;
+  }
+  #legend h3 { font-size: 10px; color: #8b949e; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 5px; }
+  .leg-row { display: flex; align-items: center; gap: 8px; }
+  .leg-dot { width: 12px; height: 12px; border-radius: 50%; }
+
+  /* hint */
+  #hint { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); color: #484f58; font-size: 11px; pointer-events: none; }
+</style>
+</head>
+<body>
+
+<svg id="canvas">
+  <defs>
+    <marker id="arrow-call" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#444c56"/>
+    </marker>
+    <marker id="arrow-lat" markerWidth="6" markerHeight="6" refX="5" refY="2.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,5 L6,2.5 z" fill="#4d3a1a"/>
+    </marker>
+    <marker id="arrow-call-hi" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+    </marker>
+    <marker id="arrow-lat-hi" markerWidth="6" markerHeight="6" refX="5" refY="2.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,5 L6,2.5 z" fill="#e3b341"/>
+    </marker>
+  </defs>
+  <g id="g-main"></g>
+</svg>
+
+<div id="tip"></div>
+
+<div id="panel">
+  <h2>🧩 pkg_solar_monitor</h2>
+
+  <h3>Edges</h3>
+  <label class="toggle-row">
+    <input type="checkbox" id="chk-calls" checked>
+    <span class="dot" style="background:#444c56; border: 1px solid #58a6ff"></span>
+    Call graph (6)
+  </label>
+  <label class="toggle-row">
+    <input type="checkbox" id="chk-lateral">
+    <span class="dot" style="background:#4d3a1a; border: 1px dashed #e3b341"></span>
+    Lateral / pkg-state (17)
+  </label>
+  <div id="lateral-info">Click a node to see its lateral edges</div>
+
+  <h3>Stats</h3>
+  <div id="stats">
+    <div class="stat-row"><span>Procedures</span><span class="stat-val" id="s-procs">8</span></div>
+    <div class="stat-row"><span>Unique names</span><span class="stat-val" id="s-names">–</span></div>
+    <div class="stat-row"><span>LEAF rules</span><span class="stat-val" id="s-rules">–</span></div>
+    <div class="stat-row"><span>EXPR blocks</span><span class="stat-val" id="s-exprs">–</span></div>
+    <div class="stat-row"><span>STATE markers</span><span class="stat-val" id="s-states">–</span></div>
+    <div class="stat-row"><span>pkg vars</span><span class="stat-val" id="s-vars">–</span></div>
+  </div>
+</div>
+
+<div id="legend">
+  <h3>Node roles</h3>
+  <div class="leg-row"><div class="leg-dot" style="background:#f0883e"></div> Orchestrator</div>
+  <div class="leg-row"><div class="leg-dot" style="background:#9e6fe5"></div> Hub (pkg-state init)</div>
+  <div class="leg-row"><div class="leg-dot" style="background:#56d364"></div> Entry point</div>
+  <div class="leg-row"><div class="leg-dot" style="background:#388bfd"></div> Standard</div>
+  <div class="leg-row"><div class="leg-dot" style="background:#3d444d; border: 1px solid #484f58"></div> Empty wrapper</div>
+  <br>
+  <div class="leg-row" style="color:#8b949e">Size ~ total annotations</div>
+</div>
+
+<div id="hint">scroll to zoom · drag to pan · click node to highlight</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script>
+const RAW = {"nodes": [{"id": "init_monitor_context", "line": 30, "rules": 0, "exprs": 0, "states": 11, "flows": 0}, {"id": "get_string_deviation", "line": 84, "rules": 2, "exprs": 1, "states": 2, "flows": 0}, {"id": "apply_thermal_derating", "line": 116, "rules": 3, "exprs": 2, "states": 2, "flows": 0}, {"id": "raise_plant_alarm", "line": 145, "rules": 1, "exprs": 1, "states": 1, "flows": 0}, {"id": "classify_string_alarm", "line": 169, "rules": 2, "exprs": 0, "states": 4, "flows": 3}, {"id": "check_inverter_status", "line": 206, "rules": 2, "exprs": 1, "states": 2, "flows": 0}, {"id": "calculate_irradiance_index", "line": 240, "rules": 2, "exprs": 2, "states": 0, "flows": 0}, {"id": "evaluate_plant_health", "line": 267, "rules": 3, "exprs": 1, "states": 0, "flows": 0}], "calls": [{"s": "classify_string_alarm", "t": "raise_plant_alarm"}, {"s": "evaluate_plant_health", "t": "init_monitor_context"}, {"s": "evaluate_plant_health", "t": "get_string_deviation"}, {"s": "evaluate_plant_health", "t": "apply_thermal_derating"}, {"s": "evaluate_plant_health", "t": "classify_string_alarm"}, {"s": "evaluate_plant_health", "t": "check_inverter_status"}], "lateral": [{"s": "init_monitor_context", "t": "get_string_deviation", "v": "v_expected_voc"}, {"s": "init_monitor_context", "t": "apply_thermal_derating", "v": "v_temp_coeff"}, {"s": "init_monitor_context", "t": "apply_thermal_derating", "v": "v_ambient_temp"}, {"s": "init_monitor_context", "t": "check_inverter_status", "v": "v_inverter_count"}, {"s": "init_monitor_context", "t": "classify_string_alarm", "v": "v_alarm_threshold_pct"}, {"s": "init_monitor_context", "t": "get_string_deviation", "v": "v_alarm_threshold_pct"}, {"s": "init_monitor_context", "t": "classify_string_alarm", "v": "v_critical_threshold_pct"}, {"s": "init_monitor_context", "t": "evaluate_plant_health", "v": "v_alarm_count"}, {"s": "raise_plant_alarm", "t": "evaluate_plant_health", "v": "v_alarm_count"}, {"s": "check_inverter_status", "t": "evaluate_plant_health", "v": "v_inverter_faults"}, {"s": "init_monitor_context", "t": "evaluate_plant_health", "v": "v_inverter_faults"}, {"s": "apply_thermal_derating", "t": "evaluate_plant_health", "v": "v_plant_status"}, {"s": "check_inverter_status", "t": "evaluate_plant_health", "v": "v_plant_status"}, {"s": "init_monitor_context", "t": "evaluate_plant_health", "v": "v_plant_status"}, {"s": "raise_plant_alarm", "t": "evaluate_plant_health", "v": "v_plant_status"}, {"s": "get_string_deviation", "t": "classify_string_alarm", "v": "v_deviation_pct"}, {"s": "apply_thermal_derating", "t": "classify_string_alarm", "v": "v_derate_factor"}]};
+
+// ─── 1. Deduplicate node IDs ───────────────────────────────────────────────
+const nameCount = {};
+const nodes = RAW.nodes.map(n => {
+  nameCount[n.id] = (nameCount[n.id] || 0) + 1;
+  return { ...n, _uid: n.id + (nameCount[n.id] > 1 ? '_v' + nameCount[n.id] : '') };
+});
+// First occurrence keeps original id as _uid; we'll remap after
+const uidByName = {}; // name → list of uids
+const seenCount = {};
+RAW.nodes.forEach(n => {
+  seenCount[n.id] = (seenCount[n.id] || 0) + 1;
+  const uid = seenCount[n.id] > 1 ? n.id + '_v' + seenCount[n.id] : n.id;
+  if (!uidByName[n.id]) uidByName[n.id] = [];
+  uidByName[n.id].push(uid);
+});
+
+// Fix nodes array to have correct _uid
+{
+  const cnt2 = {};
+  nodes.forEach(n => {
+    cnt2[n.id] = (cnt2[n.id] || 0) + 1;
+    n._uid = cnt2[n.id] > 1 ? n.id + '_v' + cnt2[n.id] : n.id;
+    n.display = n.id;  // label shown
+    if (cnt2[n.id] > 1) n.display = n.id + ' (v' + cnt2[n.id] + ')';
+  });
+}
+
+const nodeMap = new Map(nodes.map(n => [n._uid, n]));
+const firstUid = name => uidByName[name]?.[0] ?? name;
+
+// ─── 2. Edges ─────────────────────────────────────────────────────────────
+const callEdges = RAW.calls.map(e => ({
+  source: firstUid(e.s), target: firstUid(e.t), type: 'call'
+}));
+
+// aggregate lateral by (source, target)
+const latMap = new Map();
+RAW.lateral.forEach(e => {
+  const k = firstUid(e.s) + '→' + firstUid(e.t);
+  if (!latMap.has(k)) latMap.set(k, { source: firstUid(e.s), target: firstUid(e.t), vars: [], type: 'lateral' });
+  latMap.get(k).vars.push(e.v);
+});
+const latEdges = Array.from(latMap.values());
+
+// ─── 3. Node roles ────────────────────────────────────────────────────────
+const ORCHESTRATORS = new Set(['evaluate_plant_health']);
+const HUBS = new Set(['init_monitor_context']);
+const ENTRIES = new Set([]);
+const EMPTY = new Set([]);
+
+function nodeColor(n) {
+  const base = n.id;
+  if (ORCHESTRATORS.has(base)) return '#f0883e';
+  if (HUBS.has(base)) return '#9e6fe5';
+  if (ENTRIES.has(base)) return '#56d364';
+  if (n.rules === 0 && n.exprs === 0 && n.states === 0 && n.flows === 0) return '#3d444d';
+  return '#388bfd';
+}
+
+function nodeR(n) {
+  const total = n.rules + n.exprs + n.states + n.flows;
+  return Math.max(8, Math.sqrt(total) * 3.5);
+}
+
+// ─── 4. Stats ─────────────────────────────────────────────────────────────
+document.getElementById('s-names').textContent = Object.keys(uidByName).length;
+document.getElementById('s-rules').textContent = nodes.reduce((a,n)=>a+n.rules,0);
+document.getElementById('s-exprs').textContent = nodes.reduce((a,n)=>a+n.exprs,0);
+document.getElementById('s-states').textContent = nodes.reduce((a,n)=>a+n.states,0);
+document.getElementById('s-vars').textContent = new Set(RAW.lateral.map(e=>e.v)).size;
+
+// ─── 5. D3 Setup ─────────────────────────────────────────────────────────
+const svg = d3.select('#canvas');
+const g = d3.select('#g-main');
+const W = window.innerWidth, H = window.innerHeight;
+
+const zoom = d3.zoom().scaleExtent([0.2, 4]).on('zoom', e => g.attr('transform', e.transform));
+svg.call(zoom);
+svg.call(zoom.transform, d3.zoomIdentity.translate(W/2, H/2));
+
+// ─── 6. Simulation ────────────────────────────────────────────────────────
+const sim = d3.forceSimulation(nodes)
+  .force('link', d3.forceLink(callEdges).id(d => d._uid).distance(d => {
+    const r1 = nodeR(d.source), r2 = nodeR(d.target);
+    return 80 + r1 + r2;
+  }).strength(0.4))
+  .force('charge', d3.forceManyBody().strength(-350))
+  .force('center', d3.forceCenter(0, 0))
+  .force('collide', d3.forceCollide(d => nodeR(d) + 18))
+  .alphaDecay(0.025);
+
+// ─── 7. Draw edges ────────────────────────────────────────────────────────
+const gLat = g.append('g').attr('class', 'lat-layer');
+const gCall = g.append('g').attr('class', 'call-layer');
+
+const latLink = gLat.selectAll('path')
+  .data(latEdges)
+  .join('path')
+  .attr('class', 'link-lateral')
+  .style('display', 'none');
+
+const callLink = gCall.selectAll('path')
+  .data(callEdges)
+  .join('path')
+  .attr('class', 'link-call');
+
+// ─── 8. Draw nodes ────────────────────────────────────────────────────────
+const gNode = g.append('g');
+
+const node = gNode.selectAll('g')
+  .data(nodes)
+  .join('g')
+  .attr('class', 'node-g')
+  .call(d3.drag()
+    .on('start', (e,d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })
+    .on('drag', (e,d) => { d.fx=e.x; d.fy=e.y; })
+    .on('end', (e,d) => { if (!e.active) sim.alphaTarget(0); d.fx=null; d.fy=null; })
+  );
+
+node.append('circle')
+  .attr('r', d => nodeR(d))
+  .attr('fill', d => nodeColor(d))
+  .attr('fill-opacity', 0.9)
+  .attr('stroke', d => d3.color(nodeColor(d)).darker(0.8));
+
+node.append('text')
+  .attr('class', 'label')
+  .attr('dy', d => nodeR(d) + 12)
+  .text(d => d.display.replace(/_/g, '_​'))  // zero-width space for wrapping
+  .each(function(d) {
+    // abbreviate if too long
+    const txt = d.display;
+    if (txt.length > 26) {
+      const parts = txt.split('_');
+      const abbr = parts.map((p,i) => i === parts.length-1 ? p : p[0]).join('_');
+      d3.select(this).text(abbr);
+      d3.select(this).append('title').text(txt);
+    }
+  });
+
+// ─── 9. Tooltip ───────────────────────────────────────────────────────────
+const tip = document.getElementById('tip');
+let selectedNode = null;
+
+node.on('mousemove', function(event, d) {
+  tip.style.display = 'block';
+  tip.style.left = (event.clientX + 14) + 'px';
+  tip.style.top  = (event.clientY - 10) + 'px';
+  tip.innerHTML = `
+    <strong>${d.display}</strong><br>
+    <span style="color:#8b949e">L${d.line}</span><br><br>
+    <span class="badge b-leaf">LEAF ${d.rules}</span>
+    <span class="badge b-expr">EXPR ${d.exprs}</span>
+    <span class="badge b-state">STATE ${d.states}</span>
+    <span class="badge b-flow">FLOW ${d.flows}</span>
+  `;
+}).on('mouseleave', function() {
+  tip.style.display = 'none';
+});
+
+// ─── 10. Click = highlight ────────────────────────────────────────────────
+const latInfo = document.getElementById('lateral-info');
+
+node.on('click', function(event, d) {
+  event.stopPropagation();
+  if (selectedNode === d._uid) {
+    // deselect
+    selectedNode = null;
+    resetHighlight();
+    latInfo.textContent = 'Click a node to see its lateral edges';
+    return;
+  }
+  selectedNode = d._uid;
+
+  // find connected call nodes
+  const callNeighbors = new Set([d._uid]);
+  callEdges.forEach(e => {
+    const s = typeof e.source === 'object' ? e.source._uid : e.source;
+    const t = typeof e.target === 'object' ? e.target._uid : e.target;
+    if (s === d._uid) callNeighbors.add(t);
+    if (t === d._uid) callNeighbors.add(s);
+  });
+
+  const myLat = latEdges.filter(e => {
+    const s = typeof e.source === 'object' ? e.source._uid : e.source;
+    const t = typeof e.target === 'object' ? e.target._uid : e.target;
+    return s === d._uid || t === d._uid;
+  });
+  const latNeighbors = new Set([d._uid]);
+  myLat.forEach(e => {
+    const s = typeof e.source === 'object' ? e.source._uid : e.source;
+    const t = typeof e.target === 'object' ? e.target._uid : e.target;
+    latNeighbors.add(s); latNeighbors.add(t);
+  });
+
+  // dim everything else
+  node.select('circle')
+    .attr('fill-opacity', nd => callNeighbors.has(nd._uid) || latNeighbors.has(nd._uid) ? 0.95 : 0.2)
+    .attr('stroke', nd => nd._uid === d._uid ? '#fff' : (callNeighbors.has(nd._uid) ? '#58a6ff' : (latNeighbors.has(nd._uid) ? '#e3b341' : d3.color(nodeColor(nd)).darker(0.8))));
+
+  callLink
+    .classed('hi', e => {
+      const s = typeof e.source === 'object' ? e.source._uid : e.source;
+      const t = typeof e.target === 'object' ? e.target._uid : e.target;
+      return s === d._uid || t === d._uid;
+    })
+    .attr('stroke-opacity', e => {
+      const s = typeof e.source === 'object' ? e.source._uid : e.source;
+      const t = typeof e.target === 'object' ? e.target._uid : e.target;
+      return (s === d._uid || t === d._uid) ? 1 : 0.12;
+    });
+
+  // show lateral for this node
+  latLink
+    .style('display', e => {
+      const s = typeof e.source === 'object' ? e.source._uid : e.source;
+      const t = typeof e.target === 'object' ? e.target._uid : e.target;
+      return (s === d._uid || t === d._uid) ? null : 'none';
+    })
+    .classed('hi', true);
+
+  // Info box
+  const varSummary = {};
+  myLat.forEach(e => {
+    e.vars.forEach(v => { varSummary[v] = (varSummary[v]||0)+1; });
+  });
+  const varList = Object.entries(varSummary).sort((a,b)=>b[1]-a[1]).slice(0,8)
+    .map(([v]) => `<code style="color:#e3b341">${v}</code>`).join(' ');
+  latInfo.innerHTML = `<b>${myLat.length}</b> lateral edges via:<br>${varList}`;
+});
+
+svg.on('click', () => {
+  if (selectedNode) {
+    selectedNode = null;
+    resetHighlight();
+    latInfo.textContent = 'Click a node to see its lateral edges';
+  }
+});
+
+function resetHighlight() {
+  node.select('circle')
+    .attr('fill-opacity', 0.9)
+    .attr('stroke', d => d3.color(nodeColor(d)).darker(0.8));
+  callLink.classed('hi', false).attr('stroke-opacity', 1);
+  const showLat = document.getElementById('chk-lateral').checked;
+  latLink.style('display', showLat ? null : 'none').classed('hi', false);
+}
+
+// ─── 11. Toggles ─────────────────────────────────────────────────────────
+document.getElementById('chk-calls').addEventListener('change', function() {
+  callLink.style('display', this.checked ? null : 'none');
+});
+document.getElementById('chk-lateral').addEventListener('change', function() {
+  if (!selectedNode) {
+    latLink.style('display', this.checked ? null : 'none');
+  }
+});
+
+// ─── 12. Curved path helper ───────────────────────────────────────────────
+function linkArc(d) {
+  const sx = typeof d.source === 'object' ? d.source.x : 0;
+  const sy = typeof d.source === 'object' ? d.source.y : 0;
+  const tx = typeof d.target === 'object' ? d.target.x : 0;
+  const ty = typeof d.target === 'object' ? d.target.y : 0;
+  const dx = tx - sx, dy = ty - sy;
+  const dist = Math.sqrt(dx*dx+dy*dy) || 1;
+
+  // offset endpoint to node edge
+  const tr = typeof d.target === 'object' ? nodeR(d.target) + 8 : 15;
+  const ex = tx - (dx/dist)*tr;
+  const ey = ty - (dy/dist)*tr;
+
+  // slight curve
+  const curve = d.type === 'lateral' ? 0.35 : 0.15;
+  const mx = (sx+tx)/2 - dy*curve;
+  const my = (sy+ty)/2 + dx*curve;
+  return `M${sx},${sy} Q${mx},${my} ${ex},${ey}`;
+}
+
+// ─── 13. Tick ────────────────────────────────────────────────────────────
+sim.on('tick', () => {
+  callLink.attr('d', linkArc);
+  latLink.attr('d', linkArc);
+  node.attr('transform', d => `translate(${d.x},${d.y})`);
+});
+
+window.addEventListener('resize', () => {
+  // re-center force on resize
+  sim.force('center', d3.forceCenter(0,0)).alpha(0.1).restart();
+});
+</script>
+</body>
+</html>

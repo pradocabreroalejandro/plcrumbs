@@ -1,0 +1,232 @@
+
+------------------------------------------------------------
+NODE  init_monitor_context  (line 30)
+------------------------------------------------------------
+  CONFIG refs:
+    [monitor:installation]  <- param 'p_installation_id'  (L31)
+    [monitor:window]  <- param 'p_window_mins'  (L32)
+  STATE:
+    [STATE@L59]  v_plant_id               := p_installation_id;
+    [STATE@L60]  v_window_mins            := p_window_mins;
+    [STATE@L61]  v_expected_voc           := l_exp_voc;
+    [STATE@L62]  v_temp_coeff             := l_temp_coeff;
+    [STATE@L63]  v_ambient_temp           := l_ambient;
+    [STATE@L64]  v_inverter_count         := l_inv_count;
+    [STATE@L65]  v_alarm_threshold_pct    := l_warn_pct;
+    [STATE@L66]  v_critical_threshold_pct := l_crit_pct;
+    [STATE@L68]  v_alarm_count            := 0;
+    [STATE@L69]  v_inverter_faults        := 0;
+    [STATE@L70]  v_plant_status           := 'OK';
+  CALLS:
+    -> from
+    -> raise_application_error
+  PKG STATE (lateral edges):
+    WRITE  v_plant_id  (L59)
+    WRITE  v_window_mins  (L60)
+    WRITE  v_expected_voc  (L61)
+    WRITE  v_temp_coeff  (L62)
+    WRITE  v_ambient_temp  (L63)
+    WRITE  v_inverter_count  (L64)
+    WRITE  v_alarm_threshold_pct  (L65)
+    WRITE  v_critical_threshold_pct  (L66)
+    WRITE  v_alarm_count  (L68)
+    WRITE  v_inverter_faults  (L69)
+    WRITE  v_plant_status  (L70)
+
+------------------------------------------------------------
+NODE  get_string_deviation  (line 84)
+------------------------------------------------------------
+  EXPRESSIONS:
+    [EXPR@L101]
+      / v_expected_voc * 100;
+  RULES:
+    RULE string.no_baseline
+      WHEN  v_expected_voc IS NULL OR v_expected_voc = 0
+        -> [EXPR@L101]
+           / v_expected_voc * 100;
+    RULE string.within_tolerance
+      WHEN  v_deviation_pct <= v_alarm_threshold_pct
+  STATE:
+    [STATE@L93]  v_string_voc := p_measured_voc;
+    [STATE@L106]  p_status := 'DEVIATED';
+  PKG STATE (lateral edges):
+    WRITE  v_string_voc  (L93)
+    WRITE  v_deviation_pct  (L100)
+    READ   v_expected_voc  (L95)
+    READ   v_alarm_threshold_pct  (L103)
+
+------------------------------------------------------------
+NODE  apply_thermal_derating  (line 116)
+------------------------------------------------------------
+  EXPRESSIONS:
+    [EXPR@L128]
+      * v_temp_coeff / 100);
+    [EXPR@L131]
+      v_derate_factor := v_derate_factor * 0.98;
+  RULES:
+    RULE thermal.no_coeff
+      WHEN  v_temp_coeff IS NULL
+        -> [EXPR@L128]
+           * v_temp_coeff / 100);
+    RULE thermal.hot_ambient
+      WHEN  v_ambient_temp > 35
+        -> [EXPR@L131]
+           v_derate_factor := v_derate_factor * 0.98;
+    RULE thermal.severe_derate
+      WHEN  v_derate_factor < 0.80
+  STATE:
+    [STATE@L124]  v_temp_coeff := 0.35;
+    [STATE@L135]  v_plant_status := 'DERATED';
+  PKG STATE (lateral edges):
+    WRITE  v_temp_coeff  (L124)
+    WRITE  v_derate_factor  (L127)
+    WRITE  v_plant_status  (L135)
+    READ   v_ambient_temp  (L130)
+
+------------------------------------------------------------
+NODE  raise_plant_alarm  (line 145)
+------------------------------------------------------------
+  EXPRESSIONS:
+    [EXPR@L153]
+      v_alarm_count := v_alarm_count + 1;
+  RULES:
+    RULE alarm.critical_kind
+      WHEN  p_kind = 'CRITICAL'
+  STATE:
+    [STATE@L156]  v_plant_status := 'CRITICAL';
+  PKG STATE (lateral edges):
+    WRITE  v_alarm_count  (L153)
+    WRITE  v_plant_status  (L156)
+
+------------------------------------------------------------
+NODE  classify_string_alarm  (line 169)
+------------------------------------------------------------
+  RULES:
+    RULE alarm.warn_band
+      WHEN  v_deviation_pct >= v_alarm_threshold_pct
+    RULE alarm.thermal_band
+      WHEN  v_derate_factor < 0.85
+  STATE:
+    [STATE@L181]  v_alarm_severity := 'WARN';
+    [STATE@L187]  v_alarm_severity := 'THERMAL';
+    [STATE@L192]  v_alarm_severity := 'NONE';
+    [STATE@L196]  v_alarm_severity := 'CRITICAL';
+  FLOW:
+    -> EXIT  WHEN v_deviation_pct >= v_critical_threshold_pct  (L176)
+    -> escalate  (L177)
+    -> escalate  (L195)
+  CALLS:
+    -> raise_plant_alarm
+  PKG STATE (lateral edges):
+    WRITE  v_alarm_severity  (L181)
+    READ   v_deviation_pct  (L176)
+    READ   v_critical_threshold_pct  (L176)
+    READ   v_alarm_threshold_pct  (L180)
+    READ   v_derate_factor  (L186)
+
+------------------------------------------------------------
+NODE  check_inverter_status  (line 206)
+------------------------------------------------------------
+  EXPRESSIONS:
+    [EXPR@L222]
+      v_inverter_faults := l_faults;
+  RULES:
+    RULE inverter.majority_fault
+      WHEN  AND l_faults > v_inverter_count / 2 THEN               -- [BR:LEAF(inverter:majority_fault)]
+    RULE inverter.partial_fault
+      WHEN  l_faults > 0
+  STATE:
+    [STATE@L226]  v_plant_status := 'CRITICAL';
+    [STATE@L228]  v_plant_status := 'DEGRADED';
+  CALLS:
+    -> from
+  PKG STATE (lateral edges):
+    WRITE  v_inverter_faults  (L222)
+    WRITE  v_plant_status  (L226)
+    READ   v_inverter_count  (L224)
+
+------------------------------------------------------------
+NODE  calculate_irradiance_index  (line 240)
+------------------------------------------------------------
+  EXPRESSIONS:
+    [EXPR@L253]
+      l_index := p_ghi_w_m2 / p_clear_sky_w_m2;
+    [EXPR@L256]
+      l_index := 1;
+  RULES:
+    RULE irradiance.no_clear_sky
+      WHEN  p_clear_sky_w_m2 = 0
+        -> [EXPR@L253]
+           l_index := p_ghi_w_m2 / p_clear_sky_w_m2;
+    RULE irradiance.overirradiance
+      WHEN  l_index > 1
+        -> [EXPR@L256]
+           l_index := 1;
+
+------------------------------------------------------------
+NODE  evaluate_plant_health  (line 267)
+------------------------------------------------------------
+  !! TODO (1) -- unresolved debt:
+    [TODO@L318]  l_root.put('availability_pct', NULL);
+  CONFIG refs:
+    [monitor:installation]  <- param 'p_installation_id'  (L268)
+    [monitor:window]  <- param 'p_window_mins'  (L269)
+  EXPRESSIONS:
+    [EXPR@L299]
+      l_root := JSON_OBJECT_T();
+      l_root.put('installation_id', v_plant_id);
+      l_root.put('window_mins',     v_window_mins);
+      l_root.put('alarm_count',     v_alarm_count);
+      l_root.put('inverter_faults', v_inverter_faults);
+  RULES:
+    RULE plant.critical
+      WHEN  v_plant_status = 'CRITICAL'
+    RULE plant.has_alarms
+      WHEN  v_alarm_count > 0
+    RULE plant.inverter_only
+      WHEN  v_inverter_faults > 0
+  CALLS:
+    -> init_monitor_context
+    -> get_string_deviation
+    -> apply_thermal_derating
+    -> classify_string_alarm
+    -> check_inverter_status
+  PKG STATE (lateral edges):
+    READ   v_plant_status  (L307)
+    READ   v_alarm_count  (L309)
+    READ   v_inverter_faults  (L311)
+
+============================================================
+EDGE SUMMARY
+============================================================
+
+  Call graph:
+    classify_string_alarm  ->  raise_plant_alarm
+    evaluate_plant_health  ->  init_monitor_context
+    evaluate_plant_health  ->  get_string_deviation
+    evaluate_plant_health  ->  apply_thermal_derating
+    evaluate_plant_health  ->  classify_string_alarm
+    evaluate_plant_health  ->  check_inverter_status
+
+  Pkg-state lateral edges (invisible to call graph):
+    init_monitor_context  --[v_expected_voc]-->  get_string_deviation
+    init_monitor_context  --[v_temp_coeff]-->  apply_thermal_derating
+    init_monitor_context  --[v_ambient_temp]-->  apply_thermal_derating
+    init_monitor_context  --[v_inverter_count]-->  check_inverter_status
+    init_monitor_context  --[v_alarm_threshold_pct]-->  classify_string_alarm
+    init_monitor_context  --[v_alarm_threshold_pct]-->  get_string_deviation
+    init_monitor_context  --[v_critical_threshold_pct]-->  classify_string_alarm
+    init_monitor_context  --[v_alarm_count]-->  evaluate_plant_health
+    raise_plant_alarm  --[v_alarm_count]-->  evaluate_plant_health
+    init_monitor_context  --[v_inverter_faults]-->  evaluate_plant_health
+    check_inverter_status  --[v_inverter_faults]-->  evaluate_plant_health
+    check_inverter_status  --[v_plant_status]-->  evaluate_plant_health
+    init_monitor_context  --[v_plant_status]-->  evaluate_plant_health
+    raise_plant_alarm  --[v_plant_status]-->  evaluate_plant_health
+    apply_thermal_derating  --[v_plant_status]-->  evaluate_plant_health
+    get_string_deviation  --[v_deviation_pct]-->  classify_string_alarm
+    apply_thermal_derating  --[v_derate_factor]-->  classify_string_alarm
+
+  !! DEBT: 1 [BR:TODO] across 1 node(s) -- target: zero
+
+  8 node(s) extracted.
