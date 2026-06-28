@@ -2,6 +2,7 @@
 ------------------------------------------------------------
 NODE  init_monitor_context  (line 30)
 ------------------------------------------------------------
+  !! EXCEPTION handler at line 74
   CONFIG refs:
     [monitor:installation]  <- param 'p_installation_id'  (L31)
     [monitor:window]  <- param 'p_window_mins'  (L32)
@@ -17,9 +18,6 @@ NODE  init_monitor_context  (line 30)
     [STATE@L68]  v_alarm_count            := 0;
     [STATE@L69]  v_inverter_faults        := 0;
     [STATE@L70]  v_plant_status           := 'OK';
-  CALLS:
-    -> from
-    -> raise_application_error
   PKG STATE (lateral edges):
     WRITE  v_plant_id  (L59)
     WRITE  v_window_mins  (L60)
@@ -38,17 +36,19 @@ NODE  get_string_deviation  (line 84)
 ------------------------------------------------------------
   EXPRESSIONS:
     [EXPR@L101]
+      v_deviation_pct := ABS(p_measured_voc - v_expected_voc)
       / v_expected_voc * 100;
-  RULES:
-    RULE string.no_baseline
+  ASSERTIONS:
+    [ASSERT@95]  string:baseline_expected
       WHEN  v_expected_voc IS NULL OR v_expected_voc = 0
-        -> [EXPR@L101]
-           / v_expected_voc * 100;
+  RULES:
     RULE string.within_tolerance
       WHEN  v_deviation_pct <= v_alarm_threshold_pct
   STATE:
     [STATE@L93]  v_string_voc := p_measured_voc;
     [STATE@L106]  p_status := 'DEVIATED';
+  EARLY EXITS:
+    [EXIT@L97]  RETURN;
   PKG STATE (lateral edges):
     WRITE  v_string_voc  (L93)
     WRITE  v_deviation_pct  (L100)
@@ -60,18 +60,22 @@ NODE  apply_thermal_derating  (line 116)
 ------------------------------------------------------------
   EXPRESSIONS:
     [EXPR@L128]
+      v_derate_factor := 1 - (GREATEST(p_cell_temp_c - 25, 0)
       * v_temp_coeff / 100);
     [EXPR@L131]
-      v_derate_factor := v_derate_factor * 0.98;
+      v_derate_factor := 1 - (GREATEST(p_cell_temp_c - 25, 0)
+      * v_temp_coeff / 100);                 -- [BR:EXPR]
   RULES:
     RULE thermal.no_coeff
       WHEN  v_temp_coeff IS NULL
         -> [EXPR@L128]
+           v_derate_factor := 1 - (GREATEST(p_cell_temp_c - 25, 0)
            * v_temp_coeff / 100);
     RULE thermal.hot_ambient
       WHEN  v_ambient_temp > 35
         -> [EXPR@L131]
-           v_derate_factor := v_derate_factor * 0.98;
+           v_derate_factor := 1 - (GREATEST(p_cell_temp_c - 25, 0)
+           * v_temp_coeff / 100);                 -- [BR:EXPR]
     RULE thermal.severe_derate
       WHEN  v_derate_factor < 0.80
   STATE:
@@ -102,6 +106,8 @@ NODE  raise_plant_alarm  (line 145)
 NODE  classify_string_alarm  (line 169)
 ------------------------------------------------------------
   RULES:
+    RULE alarm.critical_band
+      WHEN  v_deviation_pct >= v_critical_threshold_pct
     RULE alarm.warn_band
       WHEN  v_deviation_pct >= v_alarm_threshold_pct
     RULE alarm.thermal_band
@@ -112,9 +118,12 @@ NODE  classify_string_alarm  (line 169)
     [STATE@L192]  v_alarm_severity := 'NONE';
     [STATE@L196]  v_alarm_severity := 'CRITICAL';
   FLOW:
-    -> EXIT  WHEN v_deviation_pct >= v_critical_threshold_pct  (L176)
     -> escalate  (L177)
     -> escalate  (L195)
+  EARLY EXITS:
+    [EXIT@L183]  RETURN;
+    [EXIT@L189]  RETURN;
+    [EXIT@L193]  RETURN;
   CALLS:
     -> raise_plant_alarm
   PKG STATE (lateral edges):
@@ -138,8 +147,6 @@ NODE  check_inverter_status  (line 206)
   STATE:
     [STATE@L226]  v_plant_status := 'CRITICAL';
     [STATE@L228]  v_plant_status := 'DEGRADED';
-  CALLS:
-    -> from
   PKG STATE (lateral edges):
     WRITE  v_inverter_faults  (L222)
     WRITE  v_plant_status  (L226)
@@ -153,21 +160,23 @@ NODE  calculate_irradiance_index  (line 240)
       l_index := p_ghi_w_m2 / p_clear_sky_w_m2;
     [EXPR@L256]
       l_index := 1;
-  RULES:
-    RULE irradiance.no_clear_sky
+  ASSERTIONS:
+    [ASSERT@249]  irradiance:clear_sky_positive
       WHEN  p_clear_sky_w_m2 = 0
-        -> [EXPR@L253]
-           l_index := p_ghi_w_m2 / p_clear_sky_w_m2;
+  RULES:
     RULE irradiance.overirradiance
       WHEN  l_index > 1
         -> [EXPR@L256]
            l_index := 1;
+  EARLY EXITS:
+    [EXIT@L250]  RETURN 0;
 
 ------------------------------------------------------------
 NODE  evaluate_plant_health  (line 267)
 ------------------------------------------------------------
   !! TODO (1) -- unresolved debt:
     [TODO@L318]  l_root.put('availability_pct', NULL);
+  !! EXCEPTION handler at line 325
   CONFIG refs:
     [monitor:installation]  <- param 'p_installation_id'  (L268)
     [monitor:window]  <- param 'p_window_mins'  (L269)
@@ -213,17 +222,17 @@ EDGE SUMMARY
     init_monitor_context  --[v_temp_coeff]-->  apply_thermal_derating
     init_monitor_context  --[v_ambient_temp]-->  apply_thermal_derating
     init_monitor_context  --[v_inverter_count]-->  check_inverter_status
-    init_monitor_context  --[v_alarm_threshold_pct]-->  classify_string_alarm
     init_monitor_context  --[v_alarm_threshold_pct]-->  get_string_deviation
+    init_monitor_context  --[v_alarm_threshold_pct]-->  classify_string_alarm
     init_monitor_context  --[v_critical_threshold_pct]-->  classify_string_alarm
     init_monitor_context  --[v_alarm_count]-->  evaluate_plant_health
     raise_plant_alarm  --[v_alarm_count]-->  evaluate_plant_health
-    init_monitor_context  --[v_inverter_faults]-->  evaluate_plant_health
     check_inverter_status  --[v_inverter_faults]-->  evaluate_plant_health
+    init_monitor_context  --[v_inverter_faults]-->  evaluate_plant_health
     check_inverter_status  --[v_plant_status]-->  evaluate_plant_health
+    apply_thermal_derating  --[v_plant_status]-->  evaluate_plant_health
     init_monitor_context  --[v_plant_status]-->  evaluate_plant_health
     raise_plant_alarm  --[v_plant_status]-->  evaluate_plant_health
-    apply_thermal_derating  --[v_plant_status]-->  evaluate_plant_health
     get_string_deviation  --[v_deviation_pct]-->  classify_string_alarm
     apply_thermal_derating  --[v_derate_factor]-->  classify_string_alarm
 

@@ -1,8 +1,105 @@
-<!DOCTYPE html>
+#!/usr/bin/env python3
+"""
+br_graph_render.py  —  Render an interactive D3.js graph from br_extractor JSON.
+
+Usage:
+  python br_graph_render.py graph_data.json > br_graph.html
+  python br_graph_render.py graph_data.json -o br_graph.html
+
+Reads the deterministic JSON produced by `br_extractor.py --json` and embeds
+it into a self-contained HTML file with D3.js force-directed graph.
+
+No external dependencies beyond Python 3.8+. The HTML is fully self-contained
+(one file, including inline CSS/JS, CDN-loaded D3). No server needed — open
+directly in a browser.
+
+The renderer is independent from the extractor. The only contract is the JSON
+shape produced by `build_graph_data()` in br_extractor.py.
+"""
+import argparse
+import json
+import sys
+from pathlib import Path
+
+
+def build_html(data):
+    """Render an interactive D3.js graph HTML with the given data embedded."""
+    package = _guess_package_name(data)
+    orchestrators, hubs, entries = _compute_roles(data)
+    call_count = len(data.get("calls", []))
+    lat_count = len(data.get("lateral", []))
+    raw_json = json.dumps(data, separators=(",", ":"))
+
+    html = _HTML_TEMPLATE
+    subs = {
+        "PACKAGE": package,
+        "CALL_COUNT": str(call_count),
+        "LAT_COUNT": str(lat_count),
+        "NODE_COUNT": str(len(data.get("nodes", []))),
+        "RAW_JSON": raw_json,
+        "ORCHESTRATORS_JSON": json.dumps(orchestrators),
+        "HUBS_JSON": json.dumps(hubs),
+        "ENTRIES_JSON": json.dumps(entries),
+    }
+    for key, val in subs.items():
+        html = html.replace("{{" + key + "}}", val)
+    return html
+
+
+def _guess_package_name(data):
+    ids = [n["id"] for n in data.get("nodes", [])]
+    if not ids:
+        return "BR Graph"
+    prefix = ids[0]
+    for nid in ids[1:]:
+        while not nid.startswith(prefix):
+            prefix = prefix[:-1]
+            if not prefix:
+                break
+    prefix = prefix.rstrip("_")
+    return prefix.upper() if prefix else "BR Graph"
+
+
+def _compute_roles(data):
+    out_calls = {n["id"]: 0 for n in data["nodes"]}
+    for c in data.get("calls", []):
+        if c["s"] in out_calls:
+            out_calls[c["s"]] += 1
+
+    writes = {}
+    for lat in data.get("lateral", []):
+        writes.setdefault(lat["s"], set()).add(lat["v"])
+    write_counts = {n["id"]: len(writes.get(n["id"], set())) for n in data["nodes"]}
+
+    in_calls = {n["id"]: 0 for n in data["nodes"]}
+    for c in data.get("calls", []):
+        if c["t"] in in_calls:
+            in_calls[c["t"]] += 1
+
+    orchestrators = []
+    hubs = []
+    entries = []
+
+    for n in data["nodes"]:
+        nid = n["id"]
+        if out_calls.get(nid, 0) >= 2 and write_counts.get(nid, 0) > 0:
+            orchestrators.append(nid)
+        elif write_counts.get(nid, 0) >= 2 and out_calls.get(nid, 0) <= 1:
+            hubs.append(nid)
+        if in_calls.get(nid, 0) == 0:
+            entries.append(nid)
+
+    return orchestrators, hubs, entries
+
+
+# ---- HTML template -----------------------------------------------------------
+# Uses {{PLACEHOLDER}} markers (NOT %-formatting) to avoid clashes with CSS %.
+
+_HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>plcrumbs · BR Graph — BR Graph</title>
+<title>plcrumbs · {{PACKAGE}} — BR Graph</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #0f1117; color: #c9d1d9; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 13px; overflow: hidden; }
@@ -86,24 +183,24 @@
 <div id="tip"></div>
 
 <div id="panel">
-  <h2>&#x1f9e9 BR Graph</h2>
+  <h2>&#x1f9e9 {{PACKAGE}}</h2>
 
   <h3>Edges</h3>
   <label class="toggle-row">
     <input type="checkbox" id="chk-calls" checked>
     <span class="dot" style="background:#444c56; border: 1px solid #58a6ff"></span>
-    Call graph (6)
+    Call graph ({{CALL_COUNT}})
   </label>
   <label class="toggle-row">
     <input type="checkbox" id="chk-lateral">
     <span class="dot" style="background:#4d3a1a; border: 1px dashed #e3b341"></span>
-    Lateral / pkg-state (17)
+    Lateral / pkg-state ({{LAT_COUNT}})
   </label>
   <div id="lateral-info">Click a node to see its lateral edges</div>
 
   <h3>Stats</h3>
   <div id="stats">
-    <div class="stat-row"><span>Procedures</span><span class="stat-val" id="s-procs">8</span></div>
+    <div class="stat-row"><span>Procedures</span><span class="stat-val" id="s-procs">{{NODE_COUNT}}</span></div>
     <div class="stat-row"><span>Unique names</span><span class="stat-val" id="s-names">&ndash;</span></div>
     <div class="stat-row"><span>LEAF rules</span><span class="stat-val" id="s-rules">&ndash;</span></div>
     <div class="stat-row"><span>ASSERT</span><span class="stat-val" id="s-asserts">&ndash;</span></div>
@@ -132,7 +229,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
 <script>
-const RAW = {"nodes":[{"id":"init_monitor_context","line":30,"rules":0,"asserts":0,"exprs":0,"expr_lines":0,"states":11,"flows":0,"exits":0,"configs":2,"has_exception":true},{"id":"get_string_deviation","line":84,"rules":1,"asserts":1,"exprs":1,"expr_lines":2,"states":2,"flows":0,"exits":1,"configs":0,"has_exception":false},{"id":"apply_thermal_derating","line":116,"rules":3,"asserts":0,"exprs":2,"expr_lines":4,"states":2,"flows":0,"exits":0,"configs":0,"has_exception":false},{"id":"raise_plant_alarm","line":145,"rules":1,"asserts":0,"exprs":1,"expr_lines":1,"states":1,"flows":0,"exits":0,"configs":0,"has_exception":false},{"id":"classify_string_alarm","line":169,"rules":3,"asserts":0,"exprs":0,"expr_lines":0,"states":4,"flows":2,"exits":3,"configs":0,"has_exception":false},{"id":"check_inverter_status","line":206,"rules":2,"asserts":0,"exprs":1,"expr_lines":1,"states":2,"flows":0,"exits":0,"configs":0,"has_exception":false},{"id":"calculate_irradiance_index","line":240,"rules":1,"asserts":1,"exprs":2,"expr_lines":2,"states":0,"flows":0,"exits":1,"configs":0,"has_exception":false},{"id":"evaluate_plant_health","line":267,"rules":3,"asserts":0,"exprs":1,"expr_lines":5,"states":0,"flows":0,"exits":0,"configs":2,"has_exception":true}],"calls":[{"s":"classify_string_alarm","t":"raise_plant_alarm"},{"s":"evaluate_plant_health","t":"init_monitor_context"},{"s":"evaluate_plant_health","t":"get_string_deviation"},{"s":"evaluate_plant_health","t":"apply_thermal_derating"},{"s":"evaluate_plant_health","t":"classify_string_alarm"},{"s":"evaluate_plant_health","t":"check_inverter_status"}],"lateral":[{"s":"init_monitor_context","t":"get_string_deviation","v":"v_expected_voc"},{"s":"init_monitor_context","t":"apply_thermal_derating","v":"v_temp_coeff"},{"s":"init_monitor_context","t":"apply_thermal_derating","v":"v_ambient_temp"},{"s":"init_monitor_context","t":"check_inverter_status","v":"v_inverter_count"},{"s":"init_monitor_context","t":"classify_string_alarm","v":"v_alarm_threshold_pct"},{"s":"init_monitor_context","t":"get_string_deviation","v":"v_alarm_threshold_pct"},{"s":"init_monitor_context","t":"classify_string_alarm","v":"v_critical_threshold_pct"},{"s":"init_monitor_context","t":"evaluate_plant_health","v":"v_alarm_count"},{"s":"raise_plant_alarm","t":"evaluate_plant_health","v":"v_alarm_count"},{"s":"check_inverter_status","t":"evaluate_plant_health","v":"v_inverter_faults"},{"s":"init_monitor_context","t":"evaluate_plant_health","v":"v_inverter_faults"},{"s":"apply_thermal_derating","t":"evaluate_plant_health","v":"v_plant_status"},{"s":"check_inverter_status","t":"evaluate_plant_health","v":"v_plant_status"},{"s":"init_monitor_context","t":"evaluate_plant_health","v":"v_plant_status"},{"s":"raise_plant_alarm","t":"evaluate_plant_health","v":"v_plant_status"},{"s":"get_string_deviation","t":"classify_string_alarm","v":"v_deviation_pct"},{"s":"apply_thermal_derating","t":"classify_string_alarm","v":"v_derate_factor"}]};
+const RAW = {{RAW_JSON}};
 
 const nameCount = {};
 const nodes = RAW.nodes.map(n => {
@@ -173,9 +270,9 @@ RAW.lateral.forEach(e => {
 });
 const latEdges = Array.from(latMap.values());
 
-const ORCHESTRATORS = new Set([]);
-const HUBS = new Set(["init_monitor_context", "apply_thermal_derating", "raise_plant_alarm", "check_inverter_status"]);
-const ENTRIES = new Set(["calculate_irradiance_index", "evaluate_plant_health"]);
+const ORCHESTRATORS = new Set({{ORCHESTRATORS_JSON}});
+const HUBS = new Set({{HUBS_JSON}});
+const ENTRIES = new Set({{ENTRIES_JSON}});
 
 function nodeColor(n) {
   const base = n.id;
@@ -412,4 +509,35 @@ window.addEventListener('resize', () => {
 });
 </script>
 </body>
-</html>
+</html>"""
+
+
+# ---- entry point -------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Render an interactive D3.js graph from br_extractor JSON.",
+    )
+    parser.add_argument("input", help="Path to graph_data.json (from br_extractor.py --json)")
+    parser.add_argument("-o", "--output", help="Output HTML file (default: stdout)")
+
+    args = parser.parse_args()
+
+    src = Path(args.input)
+    if not src.exists():
+        sys.exit(f"File not found: {src}")
+
+    with open(src, encoding="utf-8") as f:
+        data = json.load(f)
+
+    html = build_html(data)
+
+    if args.output:
+        Path(args.output).write_text(html, encoding="utf-8")
+        print(f"Generated: {args.output}")
+    else:
+        sys.stdout.write(html)
+
+
+if __name__ == "__main__":
+    main()

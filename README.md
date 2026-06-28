@@ -37,13 +37,20 @@ Two annotation families. Two parsers. Multiple artifacts. All deterministic, all
 
 | Annotation | What it marks |
 |---|---|
-| `-- [BR:LEAF(entity:attr)]` | decision point (IF / CASE condition) |
+| `-- [BR:LEAF(entity:attr)]` | decision point (IF / CASE condition) — branches business logic |
+| `-- [BR:ASSERT(entity:attr)]` | precondition / postcondition guard — validates input state |
 | `-- [BR:EXPR:BEGIN]` … `-- [BR:EXPR:END]` | multi-line block that produces a value |
-| `-- [BR:EXPR]` | inline expression (single line) |
-| `-- [BR:STATE]` | flow state — flag, sentinel, counter |
+| `-- [BR:EXPR]` | inline expression that produces / transforms a value (single line) |
+| `-- [BR:STATE]` | flow state — flag, sentinel, counter, literal assignment that controls flow |
 | `-- [BR:FLOW]` | control transfer — GOTO, label, routing |
+| `-- [BR:EXIT]` | early return with a value (mid-flow, not at function end) |
+| `-- [BR:CALL:target]` | dynamic call — marks `EXECUTE IMMEDIATE` or indirect invocation |
 | `-- [CONFIG:scope:key]` | IN parameter anchored to a config node |
 | `-- [BR:TODO]` | unclassified — counted and listed, never graphed |
+
+**Semantic distinction EXPR vs STATE**: `[BR:STATE]` is for assignments of literals or constants that act as flow-control flags (e.g., `v_status := 'OK'`). `[BR:EXPR]` is for computations that transform data (e.g., `v_rate := a / b * 100`). The extractor treats the annotation as authoritative — choose the one that best matches intent.
+
+**When to use ASSERT vs LEAF**: `[BR:ASSERT]` validates input state or preconditions (e.g., `IF param IS NULL`). `[BR:LEAF]` branches actual business logic (e.g., `IF deviation > threshold`). Both produce edges in the graph but ASSERT is visually distinguished.
 
 Breadcrumbs never contain prose. The code is the explanation; the crumb marks where something happens. This keeps annotations honest — the code will contradict a lying crumb immediately.
 
@@ -92,23 +99,55 @@ Output per procedure:
 - IN/OUT parameters
 - CONFIG anchors
 - LEAF decision points with conditions
-- EXPR blocks (value producers)
+- ASSERT pre/post-condition guards
+- EXPR blocks (value producers) — multi-line expressions captured fully
 - STATE markers
-- FLOW transfers
-- Outgoing calls (direct + parameterless)
+- FLOW transfers (GOTO, label)
+- EXIT markers (early returns)
+- DYNAMIC CALLS (from `[BR:CALL:]` annotations)
+- Outgoing calls (direct + parameterless) — SQL keywords filtered out
 - Package-state lateral edges (pkg variables shared across procedures)
+- EXCEPTION handler detection
 - TODO debt count
 
 The extractor also emits a full edge summary: call graph + lateral dependencies + orphan detection.
 
-### Graph visualization
+### `br_graph_render.py` — graph visualization renderer
 
-`br_graph.html` renders the full call graph interactively (D3.js, no server needed). Open in a browser.
+Reads `graph_data.json` (from `br_extractor.py --json`) and generates a self-contained interactive graph HTML.
 
-- Node size proportional to total annotations
-- Color by role: orchestrator, hub, entry point, standard, empty wrapper
+```bash
+# render to stdout
+python br_graph_render.py graph_data.json > br_graph.html
+
+# render directly to file
+python br_graph_render.py graph_data.json -o br_graph.html
+```
+
+The renderer is **independent** from the extractor. The only contract is the JSON shape.
+No external Python dependencies — the HTML loads D3.js from CDN.
+
+Rendered graph features:
+- Node size proportional to total annotations + expression line weight
+- Color by role: orchestrator, hub, entry point, standard, empty wrapper, has-exception
 - Call edges (solid) and lateral pkg-state edges (dashed, shown per node on click)
-- Hover tooltips: LEAF / EXPR / STATE / FLOW counts per procedure
+- Hover tooltips: LEAF / ASSERT / EXPR / STATE / FLOW / EXIT counts per node
+- Exception handler nodes shown with warning color
+- Stats panel with LEAF, ASSERT, EXPR, STATE, EXIT, config, exception counts
+- Roles auto-computed from call graph topology
+
+### Full pipeline
+
+```bash
+# 1. Extract business rules (text output)
+python br_extractor.py src/pkg_solar_monitor.pkb > br_rules_full.txt
+
+# 2. Extract graph data (JSON)
+python br_extractor.py --json src/pkg_solar_monitor.pkb > graph_data.json
+
+# 3. Render interactive graph (HTML)
+python br_graph_render.py graph_data.json -o br_graph.html
+```
 
 ---
 
@@ -182,7 +221,8 @@ Extracted:
 plcrumbs/
   instrument.py              ← observability generator  (LOG family)
   br_extractor.py            ← business rule extractor  (BR family)
-  br_graph.html              ← interactive graph viewer
+  br_graph_render.py         ← graph visualization renderer (reads graph_data.json)
+  br_graph.html              ← interactive graph viewer (generated, not edited by hand)
   br_rules_full.txt          ← extractor output (full package)
   graph_data.json            ← graph data for the viewer
   src/

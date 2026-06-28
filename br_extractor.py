@@ -4,16 +4,17 @@ br_extractor.py  --  Business Rule extractor for plcrumbs-annotated PL/SQL.
 
 Usage: python br_extractor.py <src_file> [proc_name ...]
 
-Vocabulary (five families):
-  [CONFIG:scope:key]        -- config tree input
-  [BR:LEAF(entity:attr)]    -- decision point (IF/CASE)
-  [BR:EXPR:BEGIN/END]       -- produces a value (calc, cursor, aggregation)
-  [BR:EXPR]                 -- same, inline single-line
-  [BR:STATE]                -- flow state (flag, sentinel, counter)
-  [BR:FLOW]                 -- control transfer (GOTO, label, routing)
-
-Debt marker (not graphed):
-  [BR:TODO]                 -- unclassified; counted and listed as warning
+Vocabulary (eight families):
+  [CONFIG:scope:key]         -- config tree input
+  [BR:LEAF(entity:attr)]     -- decision point (IF/CASE)
+  [BR:ASSERT(entity:attr)]   -- pre/post-condition guard
+  [BR:EXPR:BEGIN/END]        -- produces a value (calc, cursor, aggregation)
+  [BR:EXPR]                  -- same, inline single-line
+  [BR:STATE]                 -- flow state (flag, sentinel, counter)
+  [BR:FLOW]                  -- control transfer (GOTO, label, routing)
+  [BR:EXIT]                  -- early return with a value (mid-flow)
+  [BR:CALL:target]           -- dynamic call (EXECUTE IMMEDIATE, etc.)
+  [BR:TODO]                  -- unclassified; counted and listed as warning
 
 The code is the truth -- crumbs only mark WHERE.
 """
@@ -50,6 +51,23 @@ class BrLeaf:
     line_no: int
 
 @dataclass
+class BrAssert:
+    entity: str
+    attr: str
+    condition: str
+    line_no: int
+
+@dataclass
+class BrExit:
+    code: str
+    line_no: int
+
+@dataclass
+class BrCall:
+    target: str
+    line_no: int
+
+@dataclass
 class ConfigRef:
     scope: str
     key: str
@@ -70,12 +88,17 @@ class ProcedureNode:
     params_out: list = field(default_factory=list)
     configs: list    = field(default_factory=list)
     leaves: list     = field(default_factory=list)
+    asserts: list    = field(default_factory=list)   # BrAssert
     exprs: list      = field(default_factory=list)   # BrExpr
     states: list     = field(default_factory=list)   # BrState
     flows: list      = field(default_factory=list)   # BrFlow
+    exits: list      = field(default_factory=list)   # BrExit
+    dynamic_calls: list = field(default_factory=list) # BrCall
     calls: list      = field(default_factory=list)
     pkg_state: list  = field(default_factory=list)
     todos: list      = field(default_factory=list)   # (code, line_no)
+    has_exception: bool = False
+    exception_line: int = 0
 
 
 # ---- regexes -----------------------------------------------------------------
@@ -86,14 +109,18 @@ RE_PARAM_IN  = re.compile(r'\b(\w+)\s+IN\b(?!\s+OUT)', re.IGNORECASE)
 RE_PARAM_OUT = re.compile(r'\b(\w+)\s+(?:IN\s+OUT|OUT)\b', re.IGNORECASE)
 RE_CONFIG    = re.compile(r'\[CONFIG:(\w+):(\w+)\]')
 RE_BR_LEAF   = re.compile(r'\[BR:LEAF\((\w+):(\w+)\)\]')
+RE_BR_ASSERT = re.compile(r'\[BR:ASSERT\((\w+):(\w+)\)\]')
 RE_BR_EXPR_B = re.compile(r'\[BR:EXPR:BEGIN\]')
 RE_BR_EXPR_E = re.compile(r'\[BR:EXPR:END\]')
 RE_BR_EXPR   = re.compile(r'\[BR:EXPR\](?!:)')    # inline, not BEGIN/END
 RE_BR_STATE  = re.compile(r'\[BR:STATE\]')
 RE_BR_FLOW   = re.compile(r'\[BR:FLOW\]')
+RE_BR_EXIT   = re.compile(r'\[BR:EXIT\]')
+RE_BR_CALL   = re.compile(r'\[BR:CALL:(\w+)\]')
 RE_BR_TODO   = re.compile(r'\[BR:TODO\]')
 RE_PKG_WRITE = re.compile(r'\b(v_\w+)\s*:=')
 RE_PKG_READ  = re.compile(r'\b(v_\w+)\b')
+RE_EXCEPTION = re.compile(r'^\s*EXCEPTION\b', re.IGNORECASE)
 
 KW_SKIP = {
     'if', 'loop', 'while', 'for', 'case', 'when', 'exit', 'begin', 'end',
@@ -102,6 +129,20 @@ KW_SKIP = {
     'nvl', 'decode', 'trunc', 'to_date', 'to_char', 'sum', 'count', 'max',
     'min', 'substr', 'instr', 'length', 'upper', 'lower', 'trim',
 }
+
+# Keywords/functions that look like calls but are not (GAP 9 fix)
+KW_CALL_SKIP = {
+    'from', 'where', 'select', 'and', 'or', 'not', 'in', 'is', 'like',
+    'between', 'exists', 'union', 'all', 'distinct', 'as', 'on', 'set',
+    'raise_application_error', 'raise', 'dbms_output', 'null', 'sysdate',
+    'greatest', 'least', 'abs', 'round', 'trunc', 'floor', 'ceil', 'power',
+    'mod', 'sqrt', 'length', 'substr', 'instr', 'replace', 'trim', 'upper',
+    'lower', 'initcap', 'to_char', 'to_number', 'to_date', 'nvl', 'nvl2',
+    'coalesce', 'decode', 'case', 'cast', 'convert', 'count', 'sum', 'avg',
+    'max', 'min', 'rank', 'dense_rank', 'row_number', 'lag', 'lead',
+    'json_object_t', 'json_array_t', 'json_element_t',
+}
+
 KW_PARAM = {
     'IN', 'OUT', 'NUMBER', 'VARCHAR2', 'DATE', 'BOOLEAN', 'CHAR',
     'INTEGER', 'PLS_INTEGER', 'BINARY_INTEGER', 'CLOB', 'BLOB',
@@ -139,6 +180,44 @@ def _is_end_block(line):
     if re.match(r'^\s*END\s+(IF|LOOP|CASE|FOR|WHILE)\b', line, re.IGNORECASE):
         return False
     return True
+
+
+def _is_call_skip(name):
+    """Check if a detected call name should be skipped (GAP 9)."""
+    return name.lower() in KW_CALL_SKIP or name.upper() in KW_PARAM
+
+
+def _grab_assignment_block(lines, start_idx, max_lookahead=10):
+    """For an EXPR inline annotation, try to capture the full assignment block
+    from the most recent ':= ' back to the terminating ';'.
+    Returns (code_lines, actual_end_line).
+    """
+    # Search backwards from start_idx to find the ':= ' that begins this expression
+    assign_line = -1
+    for j in range(start_idx, max(start_idx - max_lookahead, -1), -1):
+        line = lines[j].rstrip('\n')
+        if ':=' in line and not line.strip().startswith('--') and '-- [BR:EXPR]' not in line:
+            # Found the assignment start line
+            assign_line = j
+            break
+    
+    if assign_line < 0:
+        return [lines[start_idx].rstrip('\n').replace('-- [BR:EXPR]', '').strip()], start_idx
+    
+    # Now go forward from assign_line to find the terminating ';'
+    code_lines = []
+    end_line = assign_line
+    for j in range(assign_line, min(start_idx + max_lookahead, len(lines))):
+        raw = lines[j].rstrip('\n')
+        # Strip any annotation from the EXPR line itself
+        if j == start_idx:
+            raw = re.sub(r'\s*--\s*\[BR:EXPR\]\s*$', '', raw)
+        code_lines.append(raw.strip())
+        end_line = j
+        if ';' in raw and not raw.strip().startswith('--'):
+            break
+    
+    return code_lines, end_line
 
 
 # ---- parser ------------------------------------------------------------------
@@ -227,6 +306,11 @@ def parse(src_lines):
                 _save_expr()
                 continue
 
+        # EXCEPTION block detection (GAP 8)
+        if RE_EXCEPTION.match(line):
+            current.has_exception = True
+            current.exception_line = line_no
+
         # [BR:EXPR:BEGIN]
         if RE_BR_EXPR_B.search(line):
             expr_active = True
@@ -254,11 +338,21 @@ def parse(src_lines):
                 line_no=line_no,
             ))
 
-        # [BR:EXPR] inline
+        # [BR:ASSERT(entity:attr)] (GAP 7)
+        m_assert = RE_BR_ASSERT.search(line)
+        if m_assert:
+            current.asserts.append(BrAssert(
+                entity=m_assert.group(1),
+                attr=m_assert.group(2),
+                condition=_extract_condition(line),
+                line_no=line_no,
+            ))
+
+        # [BR:EXPR] inline (GAP 2 fix: capture full assignment block)
         if RE_BR_EXPR.search(line):
-            code = re.sub(r'\s*--.*$', '', line).strip()
+            code, _ = _grab_assignment_block(src_lines, i)
             if code:
-                current.exprs.append(BrExpr(sql=[code], line_no=line_no))
+                current.exprs.append(BrExpr(sql=code, line_no=line_no))
 
         # [BR:STATE]
         if RE_BR_STATE.search(line):
@@ -278,6 +372,19 @@ def parse(src_lines):
                       else 'EXIT')
             current.flows.append(BrFlow(target=target, condition=cond, line_no=line_no))
 
+        # [BR:EXIT] (GAP 5)
+        if RE_BR_EXIT.search(line):
+            code = re.sub(r'\s*--.*$', '', line).strip()
+            if code:
+                current.exits.append(BrExit(code=code, line_no=line_no))
+
+        # [BR:CALL:target] (GAP 10)
+        m_call = RE_BR_CALL.search(line)
+        if m_call:
+            target = m_call.group(1).lower()
+            if target not in current.dynamic_calls:
+                current.dynamic_calls.append(BrCall(target=target, line_no=line_no))
+
         # [BR:TODO]
         if RE_BR_TODO.search(line):
             code = re.sub(r'\s*--.*$', '', line).strip()
@@ -289,7 +396,8 @@ def parse(src_lines):
             call_m = re.match(r'^\s*(\w+)\s*;', line)
         if call_m and ':=' not in line:
             name = call_m.group(1).lower()
-            if name not in KW_SKIP and name != current.name and name not in current.calls:
+            if (name not in KW_SKIP and not _is_call_skip(name)
+                    and name != current.name and name not in current.calls):
                 current.calls.append(name)
 
         # pkg-state lateral edge tracking
@@ -318,6 +426,9 @@ def emit_rule(node):
         for code, ln in node.todos:
             out.append(f"    [TODO@L{ln}]  {code}")
 
+    if node.has_exception:
+        out.append(f"  !! EXCEPTION handler at line {node.exception_line}")
+
     if node.configs:
         out.append("  CONFIG refs:")
         for c in node.configs:
@@ -331,6 +442,12 @@ def emit_rule(node):
                 out.append(f"      {ln.strip()}")
             if len(e.sql) > 6:
                 out.append(f"      ... (+{len(e.sql)-6} lines)")
+
+    if node.asserts:
+        out.append("  ASSERTIONS:")
+        for a in node.asserts:
+            out.append(f"    [ASSERT@{a.line_no}]  {a.entity}:{a.attr}")
+            out.append(f"      WHEN  {a.condition}")
 
     if node.leaves:
         out.append("  RULES:")
@@ -360,6 +477,16 @@ def emit_rule(node):
         for fl in node.flows:
             cond_str = f"  WHEN {fl.condition}" if fl.condition else ""
             out.append(f"    -> {fl.target}{cond_str}  (L{fl.line_no})")
+
+    if node.exits:
+        out.append("  EARLY EXITS:")
+        for e in node.exits:
+            out.append(f"    [EXIT@L{e.line_no}]  {e.code}")
+
+    if node.dynamic_calls:
+        out.append("  DYNAMIC CALLS:")
+        for c in node.dynamic_calls:
+            out.append(f"    -> {c.target}  (L{c.line_no})")
 
     if node.calls:
         out.append("  CALLS:")
@@ -394,6 +521,13 @@ def emit_edges(nodes):
         for c in n.calls:
             if c in all_names:
                 out.append(f"    {n.name}  ->  {c}")
+
+    # Dynamic calls (GAP 10)
+    dyn_calls = [(n.name, c.target) for n in nodes for c in n.dynamic_calls]
+    if dyn_calls:
+        out.append("\n  Dynamic calls (explicit annotations):")
+        for caller, callee in dyn_calls:
+            out.append(f"    {caller}  =[DYN]=>  {callee}")
 
     writes_map = {}
     reads_map  = {}
@@ -432,18 +566,23 @@ def emit_edges(nodes):
 def build_graph_data(nodes):
     """Deterministic graph payload consumed by br_graph.html (const RAW).
 
-    Shape: {"nodes":[{id,line,rules,exprs,states,flows}],
-            "calls":[{s,t}], "lateral":[{s,t,v}]}
+    Shape: {"nodes":[{id,line,rules,asserts,exprs,expr_lines,states,flows,exits,configs,has_exception}],
+            "calls":[{s,t}], "lateral":[{s,t,v}], "dynamic_calls":[{s,t}]}
     Same topology the emit_edges() text summary describes.
     """
     all_names = {n.name for n in nodes}
 
-    out_nodes = [
-        {"id": n.name, "line": n.line_no,
-         "rules": len(n.leaves), "exprs": len(n.exprs),
-         "states": len(n.states), "flows": len(n.flows)}
-        for n in nodes
-    ]
+    out_nodes = []
+    for n in nodes:
+        total_expr_lines = sum(len(e.sql) for e in n.exprs)
+        out_nodes.append({
+            "id": n.name, "line": n.line_no,
+            "rules": len(n.leaves), "asserts": len(n.asserts),
+            "exprs": len(n.exprs), "expr_lines": total_expr_lines,
+            "states": len(n.states), "flows": len(n.flows),
+            "exits": len(n.exits), "configs": len(n.configs),
+            "has_exception": n.has_exception,
+        })
 
     calls = []
     seen_call = set()
@@ -452,6 +591,15 @@ def build_graph_data(nodes):
             if c in all_names and (n.name, c) not in seen_call:
                 calls.append({"s": n.name, "t": c})
                 seen_call.add((n.name, c))
+
+    # Dynamic calls in JSON (GAP 10)
+    dyn_calls = []
+    seen_dyn = set()
+    for n in nodes:
+        for dc in n.dynamic_calls:
+            if (n.name, dc.target) not in seen_dyn:
+                dyn_calls.append({"s": n.name, "t": dc.target})
+                seen_dyn.add((n.name, dc.target))
 
     writes_map, reads_map = {}, {}
     for n in nodes:
@@ -468,7 +616,10 @@ def build_graph_data(nodes):
                         lateral.append({"s": w, "t": r, "v": var})
                         seen_lat.add((w, var, r))
 
-    return {"nodes": out_nodes, "calls": calls, "lateral": lateral}
+    result = {"nodes": out_nodes, "calls": calls, "lateral": lateral}
+    if dyn_calls:
+        result["dynamic_calls"] = dyn_calls
+    return result
 
 
 # ---- entry point -------------------------------------------------------------

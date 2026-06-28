@@ -92,9 +92,9 @@ CREATE OR REPLACE PACKAGE BODY pkg_solar_monitor AS
 
     v_string_voc := p_measured_voc;                          -- [BR:STATE]
 
-    IF v_expected_voc IS NULL OR v_expected_voc = 0 THEN      -- [BR:LEAF(string:no_baseline)]
+    IF v_expected_voc IS NULL OR v_expected_voc = 0 THEN      -- [BR:ASSERT(string:baseline_expected)]
       p_status := 'NO_BASELINE';
-      RETURN;
+      RETURN;                                                     -- [BR:EXIT]
     END IF;
 
     v_deviation_pct := ABS(p_measured_voc - v_expected_voc)
@@ -173,24 +173,24 @@ CREATE OR REPLACE PACKAGE BODY pkg_solar_monitor AS
   BEGIN
     -- [LOG:trace]
 
-    IF v_deviation_pct >= v_critical_threshold_pct THEN       -- [BR:FLOW]
+    IF v_deviation_pct >= v_critical_threshold_pct THEN       -- [BR:LEAF(alarm:critical_band)]
       GOTO escalate;                                          -- [BR:FLOW]
     END IF;
 
     IF v_deviation_pct >= v_alarm_threshold_pct THEN          -- [BR:LEAF(alarm:warn_band)]
       v_alarm_severity := 'WARN';                             -- [BR:STATE]
       raise_plant_alarm(p_string_id, 'WARN');
-      RETURN;
+      RETURN;                                                   -- [BR:EXIT]
     END IF;
 
     IF v_derate_factor < 0.85 THEN                            -- [BR:LEAF(alarm:thermal_band)]
       v_alarm_severity := 'THERMAL';                          -- [BR:STATE]
       raise_plant_alarm(p_string_id, 'THERMAL');
-      RETURN;
+      RETURN;                                                   -- [BR:EXIT]
     END IF;
 
     v_alarm_severity := 'NONE';                               -- [BR:STATE]
-    RETURN;
+    RETURN;                                                     -- [BR:EXIT]
 
     <<escalate>>                                              -- [BR:FLOW]
     v_alarm_severity := 'CRITICAL';                           -- [BR:STATE]
@@ -246,8 +246,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_solar_monitor AS
   BEGIN
     -- [LOG:trace]
 
-    IF p_clear_sky_w_m2 = 0 THEN                              -- [BR:LEAF(irradiance:no_clear_sky)]
-      RETURN 0;
+    IF p_clear_sky_w_m2 = 0 THEN                              -- [BR:ASSERT(irradiance:clear_sky_positive)]
+      RETURN 0;                                                 -- [BR:EXIT]
     END IF;
 
     l_index := p_ghi_w_m2 / p_clear_sky_w_m2;                 -- [BR:EXPR]
