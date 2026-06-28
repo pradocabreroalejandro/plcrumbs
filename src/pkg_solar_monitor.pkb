@@ -6,22 +6,22 @@ CREATE OR REPLACE PACKAGE BODY pkg_solar_monitor AS
   -- These v_* package variables are the lateral edges of the graph: written
   -- in one procedure, read in another. The call graph never shows them; the
   -- extractor surfaces them as dashed dependencies.
-  v_plant_id                NUMBER;
-  v_window_mins             NUMBER;
+  v_plant_id                NUMBER;                 -- [BR:PKGVAR]
+  v_window_mins             NUMBER;                 -- [BR:PKGVAR]
   v_expected_voc            NUMBER;   -- baseline string Voc (V)
   v_temp_coeff              NUMBER;   -- Voc temperature coefficient (%/degC)
   v_ambient_temp            NUMBER;   -- ambient temperature (degC)
-  v_inverter_count          NUMBER;
+  v_inverter_count          NUMBER;                 -- [BR:PKGVAR]
   v_alarm_threshold_pct     NUMBER;   -- warn band deviation (%)
   v_critical_threshold_pct  NUMBER;   -- critical band deviation (%)
 
   v_string_voc              NUMBER;   -- last measured string Voc (V)
   v_deviation_pct           NUMBER;   -- last string deviation vs baseline (%)
   v_derate_factor           NUMBER;   -- thermal derate multiplier (0..1)
-  v_alarm_severity          VARCHAR2(10);
-  v_alarm_count             NUMBER;
-  v_inverter_faults         NUMBER;
-  v_plant_status            VARCHAR2(12);
+  v_alarm_severity          VARCHAR2(10);           -- [BR:PKGVAR]
+  v_alarm_count             NUMBER;                 -- [BR:PKGVAR]
+  v_inverter_faults         NUMBER;                 -- [BR:PKGVAR]
+  v_plant_status            VARCHAR2(12);           -- [BR:PKGVAR]
 
 
   -- ==========================================================================

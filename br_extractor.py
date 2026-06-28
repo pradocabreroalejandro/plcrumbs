@@ -14,6 +14,8 @@ Vocabulary (eight families):
   [BR:FLOW]                  -- control transfer (GOTO, label, routing)
   [BR:EXIT]                  -- early return with a value (mid-flow)
   [BR:CALL:target]           -- dynamic call (EXECUTE IMMEDIATE, etc.)
+  [BR:PKGVAR]                -- declaration line of a package-level variable
+                               that creates lateral coupling between procedures
   [BR:TODO]                  -- unclassified; counted and listed as warning
 
 The code is the truth -- crumbs only mark WHERE.
@@ -117,9 +119,12 @@ RE_BR_STATE  = re.compile(r'\[BR:STATE\]')
 RE_BR_FLOW   = re.compile(r'\[BR:FLOW\]')
 RE_BR_EXIT   = re.compile(r'\[BR:EXIT\]')
 RE_BR_CALL   = re.compile(r'\[BR:CALL:(\w+)\]')
+RE_BR_PKGVAR = re.compile(r'\[BR:PKGVAR\]')
 RE_BR_TODO   = re.compile(r'\[BR:TODO\]')
-RE_PKG_WRITE = re.compile(r'\b(v_\w+)\s*:=')
-RE_PKG_READ  = re.compile(r'\b(v_\w+)\b')
+# Prefix v_ removed: the real filter is the pkg_vars whitelist built from [BR:PKGVAR].
+# Without the whitelist these would catch half the file.
+RE_PKG_WRITE = re.compile(r'\b(\w+)\s*:=')
+RE_PKG_READ  = re.compile(r'\b(\w+)\b')
 RE_EXCEPTION = re.compile(r'^\s*EXCEPTION\b', re.IGNORECASE)
 
 KW_SKIP = {
@@ -231,6 +236,18 @@ def parse(src_lines):
     expr_active = False
     expr_start  = 0
     expr_lines  = []
+
+    # ---- collect [BR:PKGVAR] whitelist (package-level declarations) ----
+    # The crumb lives on the declaration line, in the package body section
+    # before any PROCEDURE/FUNCTION. Only whitelisted vars generate lateral
+    # edges — this kills false edges from local variables that happen to share
+    # a name with a package var.
+    pkg_vars = set()
+    for raw in src_lines:
+        if RE_BR_PKGVAR.search(raw):
+            m = re.match(r'^\s*(\w+)', raw)
+            if m:
+                pkg_vars.add(m.group(1).lower())
 
     def _save_expr():
         nonlocal expr_active, expr_lines
@@ -400,14 +417,22 @@ def parse(src_lines):
                     and name != current.name and name not in current.calls):
                 current.calls.append(name)
 
-        # pkg-state lateral edge tracking
+        # pkg-state lateral edge tracking — only whitelisted [BR:PKGVAR] variables
+        # writes: any line where a whitelisted var is the LHS of :=
         for m_w in RE_PKG_WRITE.finditer(line):
-            current.pkg_state.append(PkgStateRef(m_w.group(1), 'write', line_no))
-        if re.match(r'^\s*(?:IF|ELSIF)\b', line, re.IGNORECASE) and ':=' not in line:
-            seen = {s.var for s in current.pkg_state if s.line_no == line_no}
-            for m_r in RE_PKG_READ.finditer(line):
-                if m_r.group(1) not in seen:
-                    current.pkg_state.append(PkgStateRef(m_r.group(1), 'read', line_no))
+            if m_w.group(1).lower() in pkg_vars:
+                current.pkg_state.append(PkgStateRef(m_w.group(1), 'write', line_no))
+        # reads: any line where a whitelisted var appears on the RHS (not being written).
+        # Now safe to scan ALL lines (not just IF) because the whitelist filters noise.
+        # Edge case: g_x := g_x + 1 — write wins, no duplicate read.
+        write_targets_here = {m.group(1).lower() for m in RE_PKG_WRITE.finditer(line)}
+        seen = {s.var for s in current.pkg_state if s.line_no == line_no}
+        for m_r in RE_PKG_READ.finditer(line):
+            name = m_r.group(1)
+            if (name.lower() in pkg_vars
+                    and name.lower() not in write_targets_here
+                    and name not in seen):
+                current.pkg_state.append(PkgStateRef(name, 'read', line_no))
 
     return nodes
 

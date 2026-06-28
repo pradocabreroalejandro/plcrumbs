@@ -45,6 +45,7 @@ Two annotation families. Two parsers. Multiple artifacts. All deterministic, all
 | `-- [BR:FLOW]` | control transfer — GOTO, label, routing |
 | `-- [BR:EXIT]` | early return with a value (mid-flow, not at function end) |
 | `-- [BR:CALL:target]` | dynamic call — marks `EXECUTE IMMEDIATE` or indirect invocation |
+| `-- [BR:PKGVAR]` | declaration line of a package-level variable that creates lateral coupling between procedures — only whitelisted PKGVARs generate lateral edges |
 | `-- [CONFIG:scope:key]` | IN parameter anchored to a config node |
 | `-- [BR:TODO]` | unclassified — counted and listed, never graphed |
 
@@ -253,4 +254,4 @@ plcrumbs/
 
 **Annotations are falsifiable.** A breadcrumb that lies about what the code does will be contradicted by the code itself. No prose, no paraphrasing — crumbs mark locations, code provides meaning.
 
-**Vocabulary is earned, not reserved.** New annotation types are added when a real case demands them, not speculatively. The current set (7 BR types + 2 LOG types) covers the solar packages in this repo — and has held up on much larger production packages — without needing extension.
+**Vocabulary is earned, not reserved.** New annotation types are added when a real case demands them, not speculatively. The current set (8 BR types + 2 LOG types) covers the solar packages in this repo — and has held up on much larger production packages — without needing extension.
