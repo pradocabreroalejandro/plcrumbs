@@ -201,8 +201,9 @@ def _grab_assignment_block(lines, start_idx, max_lookahead=10):
     assign_line = -1
     for j in range(start_idx, max(start_idx - max_lookahead, -1), -1):
         line = lines[j].rstrip('\n')
-        if ':=' in line and not line.strip().startswith('--') and '-- [BR:EXPR]' not in line:
+        if ':=' in line and not line.strip().startswith('--'):
             # Found the assignment start line
+            # (inline EXPR: the := is on the same line, before the -- comment)
             assign_line = j
             break
     
